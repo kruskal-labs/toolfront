@@ -1,8 +1,3 @@
-"""
-Configuration module for the daemon application.
-Centralizes all configuration settings to make them easier to manage.
-"""
-
 # Backend URL
 BACKEND_URL = "https://api.kruskal.ai"
 
@@ -19,4 +14,4 @@ MAX_DATA_ROWS = 100
 MAX_DATA_CHARS = 30000
 
 # ALRU Cache
-ALRU_CACHE_TTL = 3600
+CACHE_TTL = 3600

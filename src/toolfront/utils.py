@@ -1,13 +1,7 @@
-"""
-Data serialization utilities for converting DataFrames and other data structures.
-"""
-
+import json
+import logging
 import re
-from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 import pandas as pd
 from jellyfish import jaro_winkler_similarity
@@ -15,55 +9,10 @@ from pydantic import TypeAdapter
 from rank_bm25 import BM25Okapi
 
 from toolfront.config import MAX_DATA_CHARS, MAX_DATA_ROWS
+from toolfront.types import SearchMode
 
-
-def mask_database_password(url: str) -> str:
-    """
-    Mask only the password portion of a database URL.
-
-    Examples:
-        postgresql://user:password@host:5432/db -> postgresql://user:***@host:5432/db
-        sqlite:///path/to/db.sqlite -> sqlite:///path/to/db.sqlite (unchanged)
-    """
-    parsed = urlparse(url)
-
-    # Only mask if there's a password field (even if empty)
-    if parsed.password is not None:
-        # Replace password with asterisks, keeping username if present
-        netloc = f"{parsed.username}:***@{parsed.hostname}" if parsed.username else f"***@{parsed.hostname}"
-
-        # Add port if present
-        if parsed.port:
-            netloc = f"{netloc}:{parsed.port}"
-
-        # Reconstruct URL with masked password
-        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-
-    # Return unchanged if no password
-    return url
-
-
-class HTTPMethod(str, Enum):
-    """Valid HTTP methods."""
-
-    GET = "GET"
-    # TODO: Implement write methods
-
-
-class SearchMode(str, Enum):
-    """Search mode."""
-
-    REGEX = "regex"
-    BM25 = "bm25"
-    JARO_WINKLER = "jaro_winkler"
-
-
-@dataclass
-class ConnectionResult:
-    """Result of a database connection test."""
-
-    connected: bool
-    message: str
+logger = logging.getLogger("toolfront")
+logger.setLevel(logging.INFO)
 
 
 def tokenize(text: str) -> list[str]:
@@ -127,128 +76,45 @@ def search_items(
         raise NotImplementedError(f"Unknown search mode: {mode}")
 
 
-def serialize_value(v: Any) -> Any:
-    """Serialize individual values, handling special types like datetime and NaN."""
-    # Convert pandas and Python datetime objects to ISO format, handle NaT/NaN
-    if pd.isna(v):
-        return None
-    if isinstance(v, datetime | pd.Timestamp):
-        return v.isoformat()
-    if isinstance(v, pd.Period):
-        return v.asfreq("D").to_timestamp().isoformat()
-    elif not hasattr(v, "__dict__"):
-        return str(v)
-    return v
-
-
-def serialize_dict(d: dict[str, Any]) -> dict[str, Any]:
-    """
-    Convert a dictionary to a JSON-serializable response format with truncation.
-
-    Serializes dictionary data and handles automatic truncation when the string
-    representation exceeds MAX_DATA_CHARS.
-
-    Args:
-        d: The dictionary to convert and format
-
-    Returns:
-        Dictionary with 'data' (original or truncated dict), 'char_count' (total characters),
-        and optional 'message' (truncation notice when data is truncated)
-    """
-    # Convert dict to string to check length
-    dict_str = str(d)
-    total_chars = len(dict_str)
-
-    # Handle truncation if needed
-    is_truncated = total_chars > MAX_DATA_CHARS
-    dict_value = d if not is_truncated else dict_str[:MAX_DATA_CHARS] + "..."
-
-    result = {
-        "data": dict_value,
-        "type": "dict",
-    }
-
-    if is_truncated:
-        result["message"] = (
-            f"Results truncated to {MAX_DATA_CHARS} characters (showing {MAX_DATA_CHARS} of {total_chars} total characters)"
-        )
-
-    return result
-
-
 def serialize_response(response: Any) -> dict[str, Any]:
     """
-    Serialize any response type to a JSON-serializable format.
-    - Handles pandas DataFrames using serialize_dataframe.
-    - Handles dictionaries using serialize_dict for truncation.
-    - For other types, attempts to use Pydantic's TypeAdapter for robust, compact serialization.
-    - Falls back to string conversion if serialization fails.
+    Serialize any response to JSON-compatible format with proper truncation.
+    Uses pydantic TypeAdapter for robust serialization of any object type.
 
     Args:
-        response: Any response type from tools
+        response: Response to serialize (can be any type)
 
     Returns:
-        Dictionary with serialized response data and type information.
+        Serialized response with optional truncation message
     """
-    # Handle pandas DataFrames specifically
+
     if isinstance(response, pd.DataFrame):
-        return serialize_dataframe(response)
-    elif isinstance(response, dict):
-        return serialize_dict(response)
-    else:
-        try:
-            # Use Pydantic's TypeAdapter for robust serialization of most types
-            data = TypeAdapter(type(response)).dump_python(response)
-        except Exception:
-            # Fallback: convert to string if serialization fails
-            data = str(response)
-        return {"data": data, "type": type(response).__name__}
+        # Truncate by rows if needed
+        if len(response) > MAX_DATA_ROWS:
+            truncated_df = response.head(MAX_DATA_ROWS)
+            json_str = truncated_df.to_csv(index=False)
+            return {
+                "data": json_str,
+                "truncation_message": f"Showing {MAX_DATA_ROWS:,} rows of {len(response):,} total rows",
+            }
 
+        # Convert to JSON string
+        json_str = response.to_csv(index=False)
+        return {"data": json_str}
 
-def serialize_dataframe(df: pd.DataFrame) -> dict[str, Any]:
-    """
-    Convert a pandas DataFrame to a JSON-serializable response format with pagination.
+    # For all other types, use pydantic TypeAdapter
+    adapter = TypeAdapter(Any)
+    serialized = adapter.dump_python(response)
 
-    Serializes DataFrame data including datetime objects and handles automatic truncation
-    when the dataset exceeds MAX_DATA_ROWS.
+    # Convert to JSON string to check character count
+    json_str = json.dumps(serialized)
 
-    Args:
-        df: The pandas DataFrame to convert and format
+    # Handle truncation
+    if len(json_str) > MAX_DATA_CHARS:
+        truncated_str = json_str[: MAX_DATA_CHARS - 3] + "..."
+        return {
+            "data": truncated_str,
+            "truncation_message": f"Showing {len(truncated_str):,} characters of {len(json_str):,} total characters",
+        }
 
-    Returns:
-        Dictionary with 'data' (table structure), 'row_count' (total rows), and
-        optional 'message' (truncation notice when data is truncated)
-    """
-
-    # Build rows including index, serializing each cell
-    rows_with_indices = []
-    for idx, row in df.iterrows():
-        serialized_row = [serialize_value(idx)]
-        for v in row.tolist():
-            serialized_row.append(serialize_value(v))
-        rows_with_indices.append(serialized_row)
-
-    columns_with_index = ["index"] + df.columns.tolist()
-
-    # Get total row count
-    total_rows = len(rows_with_indices)
-
-    # Handle truncation if needed
-    is_truncated = total_rows > MAX_DATA_ROWS
-    if is_truncated:
-        rows_with_indices = rows_with_indices[:MAX_DATA_ROWS]
-
-    table_data = {
-        "type": "table",
-        "columns": columns_with_index,
-        "rows": rows_with_indices,
-    }
-
-    result = {"data": table_data, "row_count": total_rows}
-
-    if is_truncated:
-        result["message"] = (
-            f"Results truncated to {MAX_DATA_ROWS} rows (showing {MAX_DATA_ROWS} of {total_rows} total rows)"
-        )
-
-    return result
+    return {"data": serialized}
