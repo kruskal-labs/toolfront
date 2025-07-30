@@ -95,7 +95,6 @@ trino = [
     "ibis-framework[trino]>=10.6.0",
 ]
 document = [
-    "docling>=2.43.0",
     "markitdown[docx,pdf,pptx,xls,xlsx]>=0.1.2",
 ]
 
