@@ -44,7 +44,7 @@ toolfront = "toolfront.mcp:main"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["python"]
 include = ["toolfront*"]
 
 [tool.setuptools.package-data]
@@ -189,7 +189,7 @@ line-ending = "auto"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-testpaths = ["tests"]
+testpaths = ["python/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
