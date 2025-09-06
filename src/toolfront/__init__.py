@@ -1,7 +1,8 @@
 from .models.api import API
+from .models.browser import Browser
 from .models.database import Database
 
-__all__ = ["Database", "API"]
+__all__ = ["Database", "API", "Browser"]
 
 # Optional imports for document processing
 try:
