@@ -4,11 +4,16 @@ import inspect
 import json
 import logging
 import os
+import re
 from collections.abc import Callable
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, get_args, get_origin
+from urllib import parse
 
 import executing
 import pandas as pd
+import yaml
 from pydantic import TypeAdapter
 from pydantic_ai import ModelRetry
 from yarl import URL
@@ -25,6 +30,16 @@ from toolfront.config import (
 
 logger = logging.getLogger("toolfront")
 logger.setLevel(logging.INFO)
+
+
+@contextmanager
+def change_dir(destination):
+    prev_dir = Path.cwd()  # save current directory
+    os.chdir(destination)  # change to new directory
+    try:
+        yield
+    finally:
+        os.chdir(prev_dir)  # restore original directory
 
 
 def prepare_tool_for_pydantic_ai(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -44,10 +59,10 @@ def prepare_tool_for_pydantic_ai(func: Callable[..., Any]) -> Callable[..., Any]
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         try:
-            result = await func(*args, **kwargs)
-            if isinstance(result, dict):
-                return {k: serialize_response(v) for k, v in result.items()}
-            return serialize_response(result)
+            return await func(*args, **kwargs)
+            # if isinstance(result, dict):
+            #     return {k: serialize_response(v) for k, v in result.items()}
+            # return serialize_response(result)
         except Exception as e:
             logger.error(f"Tool {func.__name__} failed: {e}", exc_info=True)
             raise ModelRetry(f"Tool {func.__name__} failed: {str(e)}") from e
@@ -244,3 +259,33 @@ def get_output_type_hint() -> Any:
     except Exception as e:
         logger.debug(f"Could not get caller context: {e}")
         return None
+
+
+def parse_markdown_with_frontmatter(markdown: str) -> tuple[str, dict[str, Any]]:
+    """Parse frontmatter from markdown content and return both raw markdown and frontmatter.
+
+    Args:
+        markdown: Raw markdown content with optional frontmatter
+
+    Returns:
+        Tuple of (raw_markdown_without_frontmatter, frontmatter_config)
+    """
+    frontmatter_pattern = r"^\n*---\s*\n(.*?)\n---\s*\n(.*)"
+    match = re.match(frontmatter_pattern, markdown, re.DOTALL)
+
+    if not match:
+        return markdown, {}
+
+    try:
+        frontmatter_yaml = match.group(1)
+        content_without_frontmatter = match.group(2)
+        config = yaml.safe_load(frontmatter_yaml) or {}
+        return content_without_frontmatter, config
+    except Exception as e:
+        logger.warning(f"Failed to parse frontmatter YAML: {e}")
+        return markdown, {}
+
+
+def url_to_path(url: str) -> Path:
+    parsed_url = parse.urlparse(url)
+    return Path(parsed_url.netloc.rstrip("/")) / parsed_url.path.lstrip("/")
